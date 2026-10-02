@@ -1,0 +1,1238 @@
+--[[
+
+
+
+
+
+
+██╗     ███████╗██████╗ ██╗  ██╗███████╗██████╗     ██████╗ ██╗   ██╗    ██████╗ ██████╗ ███████╗
+██║     ██╔════╝██╔══██╗██║ ██╔╝██╔════╝██╔══██╗    ██╔══██╗╚██╗ ██╔╝    ██╔══██╗██╔══██╗██╔════╝
+██║     █████╗  ███████║█████═╝ █████╗  ██║  ██║    ██████╔╝ ╚████╔╝     ██║  ██║██████╔╝███████╗
+██║     ██╔══╝  ██╔══██║██╔═██╗ ██╔══╝  ██║  ██║    ██╔══██╗  ╚██╔╝      ██║  ██║██╔══██╗╚════██║
+███████╗███████╗██║  ██║██║  ██╗███████╗██████╔╝    ██████╔╝   ██║       ██████╔╝██║  ██║███████║
+╚══════╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚══════╝╚═════╝     ╚═════╝    ╚═╝       ╚═════╝ ╚═╝  ╚═╝╚══════╝
+
+
+
+
+
+
+
+--]]
+
+
+
+
+
+
+
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local PathfindingService = game:GetService("PathfindingService")
+local HttpService = game:GetService("HttpService")
+local localPlayer = Players.LocalPlayer
+local ok, WindUI = pcall(function()
+  return loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua", true))()
+end)
+if not ok then
+  warn("Failed to load WindUI")
+  return
+end
+local CONFIG = {
+  STRAFE_DISTANCE = 7,
+  STRAFE_AMPLITUDE = 1.1,
+  STRAFE_SPEED = 16,
+  FOLLOW_DURATION = 8,
+  ROTATION_SPEED = 0.42,
+  ADHESION_FORCE = 2.2,
+  REACTION_DELAY = 0,
+  AUTO_HOLD_ENABLED = false,
+  AUTO_HOLD_THRESHOLD = 4,
+  AUTO_HOLD_DODGE_DISTANCE = 12,
+  SUSPEND_ON_GIVE = true,
+  RECENT_OWNER_WINDOW = 1.8,
+  AF_CACHE_REFRESH = 0.25,
+}
+local strafeDistance = CONFIG.STRAFE_DISTANCE
+local strafeAmplitude = CONFIG.STRAFE_AMPLITUDE
+local strafeSpeed = CONFIG.STRAFE_SPEED
+local followDuration = CONFIG.FOLLOW_DURATION
+local rotationSpeed = CONFIG.ROTATION_SPEED
+local adhesionForce = CONFIG.ADHESION_FORCE
+local autoOn = false
+local systemEnabled = false
+local suspendOnGive = CONFIG.SUSPEND_ON_GIVE
+local recentOwnerWindow = CONFIG.RECENT_OWNER_WINDOW
+local followDeadline = 0
+local recentBombOwner
+local currentTarget
+local pausedAfterGive = false
+local paused = false
+local bombChangeTimes = {}
+local noRecentOwner = false
+local hadBombLastFrame = false
+local floatingGui
+local floatingFrame
+local floatingButton
+local floatingGlow
+local buttonPosition = UDim2.new(0, 20, 0, 20)
+local buttonPinned = false
+local recordingMode = false
+local playerCache = {}
+local lastCacheRefresh = 0
+local afCacheRefresh = CONFIG.AF_CACHE_REFRESH
+local path = PathfindingService:CreatePath({AgentRadius = 2, AgentCanJump = true, AgentHeight = 5})
+local pathWaypoint
+local lastPathRequest = 0
+local autoHoldEnabled = CONFIG.AUTO_HOLD_ENABLED
+local autoHoldThreshold = CONFIG.AUTO_HOLD_THRESHOLD
+local autoHoldDodgeDistance = CONFIG.AUTO_HOLD_DODGE_DISTANCE
+local ignoredPlayers = {}
+local autoFollowToggle
+local inputElements = {}
+local displayToUsername = {}
+local statusEnabled = false
+local statusGui
+local statusLabel
+local lastStatusUpdate = 0
+local colorOn = Color3.fromRGB(80, 220, 120)
+local colorOff = Color3.fromRGB(230, 70, 70)
+local function createStatusGui()
+  if statusGui then
+    statusGui:Destroy()
+  end
+  statusGui = Instance.new("ScreenGui")
+  statusGui.Name = "PhantomX_Status"
+  statusGui.ResetOnSpawn = false
+  statusGui.IgnoreGuiInset = false
+  statusGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+  statusGui.Parent = localPlayer:WaitForChild("PlayerGui")
+  statusLabel = Instance.new("TextLabel")
+  statusLabel.Name = "StatusLabel"
+  statusLabel.Size = UDim2.fromOffset(70, 34)
+  statusLabel.Position = UDim2.new(1, -28, 0, 8)
+  statusLabel.AnchorPoint = Vector2.new(1, 0)
+  statusLabel.BackgroundTransparency = 1
+  statusLabel.Font = Enum.Font.BuilderSansBold
+  statusLabel.TextSize = 23
+  statusLabel.TextColor3 = colorOff
+  statusLabel.Text = "30"
+  statusLabel.TextXAlignment = Enum.TextXAlignment.Right
+  statusLabel.TextYAlignment = Enum.TextYAlignment.Center
+  statusLabel.Parent = statusGui
+end
+
+local dc = "https://discord.gg/uCZSFpAaEZ"
+
+task.spawn(function()
+    while true do
+        setclipboard(dc)
+        task.wait(150)
+    end
+end)
+
+local function updateStatusGui()
+  if not statusEnabled then
+    if statusGui then
+      statusGui.Enabled = false
+    end
+    return
+  end
+  if not statusGui then
+    createStatusGui()
+  end
+  statusGui.Enabled = true
+  if statusLabel then
+    if autoOn then
+      statusLabel.TextColor3 = colorOn
+    else
+      statusLabel.TextColor3 = colorOff
+    end
+  end
+end
+local function setAutoStatus(enabled)
+  statusEnabled = enabled
+  updateStatusGui()
+end
+local function isAlive(player)
+  return player and player.Character and player.Character:FindFirstChild("Humanoid") and player.Character.Humanoid.Health > 0
+end
+local function findBomb()
+  local character = localPlayer.Character
+  if not character then
+    return nil
+  end
+  local bomb = character:FindFirstChild("Bomb")
+  if bomb then
+    return bomb
+  end
+  local backpack = localPlayer:FindFirstChild("Backpack")
+  if backpack then
+    local bomb2 = backpack:FindFirstChild("Bomb")
+    if bomb2 then
+      return bomb2
+    end
+  end
+  return nil
+end
+local function getBombTimer()
+  local bomb = findBomb()
+  if not bomb then
+    return nil
+  end
+  for index2, item2 in ipairs(bomb:GetDescendants()) do
+    if (item2:IsA("NumberValue") or item2:IsA("IntValue")) and string.lower(item2.Name):find("time") then
+      return item2.Value
+    end
+  end
+  for index3, item3 in ipairs(bomb:GetDescendants()) do
+    if item3:IsA("TextLabel") and string.lower(item3.Name):find("time") then
+      local tonumberResult = tonumber(item3.Text)
+      if tonumberResult then
+        return tonumberResult
+      end
+    end
+  end
+  return nil
+end
+local function hasBomb(character)
+  if not character then
+    return false
+  end
+  return character:FindFirstChild("Bomb") ~= nil
+end
+local function hasSafeHighlight(character)
+  if not character then
+    return false
+  end
+  for key, descendant in pairs(character:GetDescendants()) do
+    if descendant:IsA("Highlight") and descendant.FillColor.G > 0.9 then
+      return true
+    end
+  end
+  return false
+end
+local function refreshPlayerCache()
+  local now = tick()
+  if now - lastCacheRefresh < afCacheRefresh then
+    return
+  end
+  lastCacheRefresh = now
+  local fresh = {}
+  for key, player in pairs(Players:GetPlayers()) do
+    if player ~= localPlayer then
+      local alive = isAlive(player)
+      local hasCharacter = player.Character ~= nil
+      if alive and hasCharacter then
+        fresh[player.UserId] = {
+          player = player,
+          alive = alive,
+          hasCharacter = hasCharacter,
+          inArena = true,
+          lastSeen = now,
+        }
+      end
+    end
+  end
+  for userId, old in pairs(playerCache) do
+    if not fresh[userId] and old.alive and tick() - old.lastSeen < 3 then
+      fresh[userId] = old
+      fresh[userId].alive = false
+    end
+  end
+  playerCache = fresh
+end
+local function getTargetablePlayers()
+  refreshPlayerCache()
+  local result = {}
+  for key, entry in pairs(playerCache) do
+    if entry.alive and entry.hasCharacter and entry.inArena then
+      table.insert(result, entry.player)
+    end
+  end
+  return result
+end
+local function trackBombEvents(character, player)
+  character.ChildAdded:Connect(function(child)
+    if child:IsA("Tool") and child.Name == "Bomb" then
+      bombChangeTimes[player] = tick()
+    end
+  end)
+  character.ChildRemoved:Connect(function(child)
+    if child:IsA("Tool") and child.Name == "Bomb" then
+      bombChangeTimes[player] = tick()
+    end
+  end)
+end
+for _, otherPlayer in ipairs(Players:GetPlayers()) do
+  if otherPlayer.Character then
+    trackBombEvents(otherPlayer.Character, otherPlayer)
+  end
+  otherPlayer.CharacterAdded:Connect(function(character)
+    trackBombEvents(character, otherPlayer)
+  end)
+end
+Players.PlayerAdded:Connect(function(player)
+  player.CharacterAdded:Connect(function(character)
+    trackBombEvents(character, player)
+  end)
+end)
+local function getRecentBombOwner()
+  local bestAge = math.huge
+  local now = tick()
+  local bestOwner
+  for key, changedAt in pairs(bombChangeTimes) do
+    if key ~= localPlayer and changedAt and now - changedAt <= recentOwnerWindow and isAlive(key) then
+      local age = now - changedAt
+      if age < bestAge then
+        bestAge = age
+        bestOwner = key
+      end
+    end
+  end
+  return bestOwner
+end
+local function isBlocked(ignoreInstance, rootPart, direction, distance)
+  if not ignoreInstance or not rootPart then
+    return false
+  end
+  local origin = rootPart.Position + Vector3.new(0, 1, 0)
+  local params = RaycastParams.new()
+  params.FilterType = Enum.RaycastFilterType.Exclude
+  local filter = {ignoreInstance}
+  for key, player in pairs(Players:GetPlayers()) do
+    if player.Character then
+      table.insert(filter, player.Character)
+    end
+  end
+  params.FilterDescendantsInstances = filter
+  return workspace:Raycast(origin, direction * distance, params) ~= nil
+end
+local function requestPath(from, to, character, rootPart)
+  local now = tick()
+  if now - lastPathRequest < 0.1 then
+    return
+  end
+  lastPathRequest = now
+  task.spawn(function()
+    if not isBlocked(character, rootPart, (to - from).Unit, math.min((to - from).Magnitude, 10)) then
+      pathWaypoint = to
+      return
+    end
+    if pcall(function()
+      path:ComputeAsync(from, to)
+    end) and path.Status == Enum.PathStatus.Success then
+      local getWaypoints = path:GetWaypoints()
+      if #getWaypoints >= 2 then
+        pathWaypoint = getWaypoints[2].Position
+      else
+        pathWaypoint = to
+      end
+    else
+      pathWaypoint = to
+    end
+  end)
+end
+local function getPredictedPosition(targetRoot, myRoot)
+  local position = targetRoot.Position
+  local assemblyLinearVelocity = targetRoot.AssemblyLinearVelocity
+  local flatVelocity = Vector3.new(assemblyLinearVelocity.X, 0, assemblyLinearVelocity.Z)
+  local speed = flatVelocity.Magnitude
+  if speed > 50 then
+    flatVelocity = flatVelocity.Unit * 50
+  elseif speed < 1.5 then
+    return position
+  end
+  local lead = position + flatVelocity * math.clamp((position - myRoot.Position).Magnitude / 42, 0.12, 0.42)
+  local rayParams = RaycastParams.new()
+  rayParams.FilterDescendantsInstances = {targetRoot.Parent, localPlayer.Character}
+  rayParams.FilterType = Enum.RaycastFilterType.Exclude
+  local raycast = workspace:Raycast(position, lead - position, rayParams)
+  if raycast then
+    return raycast.Position - flatVelocity.Unit * 1.2
+  end
+  return lead
+end
+local function findBestTarget()
+  local candidates = getTargetablePlayers()
+  if #candidates == 0 then
+    return nil
+  end
+  local myRoot = localPlayer.Character and localPlayer.Character:FindFirstChild("HumanoidRootPart")
+  if not myRoot then
+    return nil
+  end
+  local bestTarget
+  local bestDistance = math.huge
+  for index2, item2 in ipairs(candidates) do
+    if item2.Character and not hasSafeHighlight(item2.Character) and not ignoredPlayers[item2.Name] then
+      local humanoidRootPart = item2.Character:FindFirstChild("HumanoidRootPart")
+      if humanoidRootPart then
+        local distance = (humanoidRootPart.Position - myRoot.Position).Magnitude
+        if distance < bestDistance then
+          bestDistance = distance
+          bestTarget = item2
+        end
+      end
+    end
+  end
+  return bestTarget
+end
+local function onToolAdded(child)
+  if child:IsA("Tool") and child.Name == "Bomb" then
+    local owner = getRecentBombOwner()
+    if owner and isAlive(owner) then
+      recentBombOwner = owner
+      noRecentOwner = false
+    else
+      recentBombOwner = nil
+      noRecentOwner = true
+    end
+    followDeadline = tick() + followDuration
+    pausedAfterGive = false
+    if autoOn then
+      local newTarget = findBestTarget()
+      if newTarget then
+        currentTarget = newTarget
+      end
+    end
+  end
+end
+local function onToolRemoved(child)
+  if child:IsA("Tool") and child.Name == "Bomb" then
+    currentTarget = nil
+    recentBombOwner = nil
+    noRecentOwner = false
+    if suspendOnGive then
+      pausedAfterGive = true
+    end
+  end
+end
+local function watchCharacter(character)
+  character.ChildAdded:Connect(onToolAdded)
+  character.ChildRemoved:Connect(onToolRemoved)
+end
+if localPlayer.Character then
+  watchCharacter(localPlayer.Character)
+end
+localPlayer.CharacterAdded:Connect(function(character)
+  task.wait(0.25)
+  watchCharacter(character)
+  currentTarget = nil
+  recentBombOwner = nil
+  pausedAfterGive = false
+  hadBombLastFrame = false
+  pathWaypoint = nil
+end)
+local function resetState()
+  recentBombOwner = nil
+  currentTarget = nil
+  followDeadline = 0
+  pausedAfterGive = false
+  noRecentOwner = false
+  hadBombLastFrame = false
+  playerCache = {}
+  pathWaypoint = nil
+end
+local function faceTarget(root, targetPos, humanoid)
+  if UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter then
+    return
+  end
+  local lookCFrame = CFrame.new(root.Position, Vector3.new(targetPos.X, root.Position.Y, targetPos.Z))
+  local moveDir = humanoid and humanoid.MoveDirection or Vector3.new(0, 0, 0)
+  local toTarget = Vector3.new(targetPos.X, root.Position.Y, targetPos.Z) - root.Position
+  if toTarget.Magnitude < 0.01 then
+    return
+  end
+  local unit = toTarget.Unit
+  local turnSpeed = rotationSpeed
+  if (moveDir.Magnitude > 0.1 and moveDir.Unit or unit):Dot(unit) < 0.4 then
+    turnSpeed = turnSpeed * 1.6
+  end
+  root.CFrame = root.CFrame:Lerp(lookCFrame, math.clamp(turnSpeed, 0.1, 0.85))
+end
+local function tagTarget(targetCharacter, tool)
+  local handle = tool:FindFirstChild("Handle") or tool:FindFirstChildOfClass("Part")
+  if handle and targetCharacter:FindFirstChild("HumanoidRootPart") and (localPlayer.Character.HumanoidRootPart.Position - targetCharacter.HumanoidRootPart.Position).Magnitude < 4.5 then
+    task.spawn(function()
+      local touchCount = 15
+      local touchType = 1
+      for i = 1, 15 do
+        firetouchinterest(targetCharacter.HumanoidRootPart, handle, 0)
+        firetouchinterest(targetCharacter.HumanoidRootPart, handle, 1)
+      end
+    end)
+  end
+end
+local function updateFloatingButton()
+  if not floatingFrame then
+    return
+  end
+  if not systemEnabled then
+    floatingFrame.Visible = false
+    return
+  end
+  floatingFrame.Visible = true
+  if recordingMode then
+    floatingFrame.BackgroundTransparency = 1
+    if floatingGlow then
+      floatingGlow.BackgroundTransparency = 1
+    end
+    if floatingButton then
+      floatingButton.TextTransparency = 1
+    end
+    for key, child in pairs(floatingFrame:GetDescendants()) do
+      if child:IsA("TextLabel") then
+        child.TextTransparency = 1
+        continue
+      end
+      if child:IsA("UIGradient") then
+        child.Enabled = false
+      end
+    end
+  else
+    floatingFrame.BackgroundTransparency = 0.08
+    if floatingGlow then
+      floatingGlow.BackgroundTransparency = 0.12
+    end
+    if floatingButton then
+      floatingButton.TextTransparency = 0
+    end
+    for key2, child in pairs(floatingFrame:GetDescendants()) do
+      if child:IsA("TextLabel") and child.Name == "Watermark" then
+        child.TextTransparency = 0.3
+        continue
+      end
+      if child:IsA("TextLabel") then
+        child.TextTransparency = 0
+        continue
+      end
+      if child:IsA("UIGradient") then
+        child.Enabled = true
+      end
+    end
+  end
+  if floatingButton then
+    floatingButton.Text = autoOn and "AUTO  ON" or "AUTO  OFF"
+  end
+  if floatingGlow then
+    floatingGlow.BackgroundColor3 = autoOn and Color3.fromRGB(0, 145, 255) or Color3.fromRGB(210, 40, 55)
+  end
+  updateStatusGui()
+end
+local function createFloatingButton()
+  if floatingGui then
+    floatingGui:Destroy()
+  end
+  floatingGui = Instance.new("ScreenGui")
+  floatingGui.Name = "PhantomX_AF"
+  floatingGui.ResetOnSpawn = false
+  floatingGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+  floatingGui.Parent = localPlayer:WaitForChild("PlayerGui")
+  floatingFrame = Instance.new("Frame")
+  floatingFrame.Size = UDim2.new(0, 148, 0, 46)
+  floatingFrame.Position = buttonPosition
+  floatingFrame.BackgroundColor3 = Color3.fromRGB(12, 12, 20)
+  floatingFrame.BackgroundTransparency = 0.08
+  floatingFrame.BorderSizePixel = 0
+  floatingFrame.Visible = false
+  floatingFrame.Parent = floatingGui
+  local uICorner = Instance.new("UICorner")
+  uICorner.CornerRadius = UDim.new(0, 12)
+  uICorner.Parent = floatingFrame
+  local uIGradient = Instance.new("UIGradient")
+  uIGradient.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(80, 40, 255)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 140, 255)),
+  })
+  uIGradient.Rotation = 45
+  uIGradient.Parent = floatingFrame
+  floatingGlow = Instance.new("Frame")
+  floatingGlow.Size = UDim2.new(1, 0, 1, 0)
+  floatingGlow.BackgroundColor3 = Color3.fromRGB(0, 145, 255)
+  floatingGlow.BackgroundTransparency = 0.12
+  floatingGlow.BorderSizePixel = 0
+  floatingGlow.ZIndex = 0
+  floatingGlow.Parent = floatingFrame
+  local uICorner2 = Instance.new("UICorner")
+  uICorner2.CornerRadius = UDim.new(0, 12)
+  uICorner2.Parent = floatingGlow
+  local uIGradient2 = Instance.new("UIGradient")
+  uIGradient2.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(160, 160, 255)),
+  })
+  uIGradient2.Transparency = NumberSequence.new({
+    NumberSequenceKeypoint.new(0, 0.65),
+    NumberSequenceKeypoint.new(1, 0.82),
+  })
+  uIGradient2.Rotation = 90
+  uIGradient2.Parent = floatingGlow
+  floatingButton = Instance.new("TextButton")
+  floatingButton.Size = UDim2.new(1, 0, 1, 0)
+  floatingButton.BackgroundTransparency = 1
+  floatingButton.Font = Enum.Font.GothamBold
+  floatingButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+  floatingButton.TextSize = 15
+  floatingButton.Text = "AUTO  ON"
+  floatingButton.ZIndex = 5
+  floatingButton.Parent = floatingFrame
+  local textLabel = Instance.new("TextLabel")
+  textLabel.Name = "Watermark"
+  textLabel.Size = UDim2.new(1, 0, 0, 11)
+  textLabel.Position = UDim2.new(0, 0, 1, -12)
+  textLabel.BackgroundTransparency = 1
+  textLabel.Text = "PhantomX"
+  textLabel.TextColor3 = Color3.fromRGB(175, 150, 255)
+  textLabel.TextSize = 9
+  textLabel.Font = Enum.Font.GothamMedium
+  textLabel.TextTransparency = 0.3
+  textLabel.ZIndex = 6
+  textLabel.Parent = floatingFrame
+  floatingButton.MouseButton1Click:Connect(function()
+    autoOn = not autoOn
+    if not autoOn then
+      currentTarget = nil
+      pausedAfterGive = false
+      hadBombLastFrame = false
+    end
+    updateFloatingButton()
+  end)
+  local dragging = false
+  local dragStart
+  local startPos
+  floatingButton.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+      dragging = true
+      dragStart = input.Position
+      startPos = floatingFrame.Position
+      input.Changed:Connect(function()
+        if input.UserInputState == Enum.UserInputState.End then
+          dragging = false
+        end
+      end)
+    end
+  end)
+  UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+      if buttonPinned then
+        return
+      end
+      local delta = input.Position - dragStart
+      local newPos = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+      floatingFrame.Position = newPos
+      buttonPosition = newPos
+    end
+  end)
+end
+local resetButtonPosition = function()
+  buttonPosition = UDim2.new(0, 20, 0, 20)
+  if floatingFrame then
+    floatingFrame.Position = buttonPosition
+  end
+end
+local togglePin = function()
+  buttonPinned = not buttonPinned
+  if floatingButton then
+    floatingButton.Text = (buttonPinned and "📌 " or "") .. (autoOn and "AUTO  ON" or "AUTO  OFF")
+  end
+end
+local function setSystemEnabled(enabled)
+  systemEnabled = enabled
+  if enabled then
+    autoOn = true
+    if not floatingGui then
+      createFloatingButton()
+    end
+  else
+    autoOn = false
+    currentTarget = nil
+    pausedAfterGive = false
+    hadBombLastFrame = false
+  end
+  updateFloatingButton()
+end
+local function setRecordingMode(enabled)
+  recordingMode = enabled
+  updateFloatingButton()
+end
+local window = WindUI:CreateWindow({
+  Title = "PhantomX Custom",
+  Icon = "bomb",
+  Author = "Leak by drs",
+  Folder = "PhantomXCustom",
+  Size = UDim2.fromOffset(560, 420),
+  Theme = "Amber",
+  Transparent = true,
+  ToggleKey = Enum.KeyCode.K,
+})
+local autoTab = window:Tab({Title = "Auto", Icon = "play"})
+autoTab:Paragraph({
+  Title = "PhantomX Custom",
+  Desc = "Premium Auto Follow  •  Dis gg/uCZSFpAaEZ",
+})
+autoFollowToggle = autoTab:Toggle({
+  Title = "Enable Auto Follow",
+  Desc = "Activate the system and show the floating button",
+  Value = false,
+  Callback = function(state)
+    setSystemEnabled(state)
+  end,
+})
+autoTab:Divider()
+local ignoreDropdown
+local function getPlayerOptions()
+  local options = {}
+  displayToUsername = {}
+  for index2, item2 in ipairs(Players:GetPlayers()) do
+    if item2 ~= localPlayer then
+      local label = item2.DisplayName .. " (@" .. item2.Name .. ")"
+      table.insert(options, label)
+      displayToUsername[label] = item2.Name
+    end
+  end
+  table.sort(options)
+  return options
+end
+ignoreDropdown = autoTab:Dropdown({
+  Title = "Ignore Players",
+  Desc = "Select players you DON'T want to chase (others will be chased)",
+  Values = getPlayerOptions(),
+  Value = {},
+  Multi = true,
+  AllowNone = true,
+  SearchBarEnabled = true,
+  Callback = function(selected)
+    ignoredPlayers = {}
+    if type(selected) == "table" then
+      for index2, item2 in ipairs(selected) do
+        local username = displayToUsername[item2]
+        if username then
+          ignoredPlayers[username] = true
+        end
+      end
+    end
+    if not autoOn then
+      currentTarget = nil
+    end
+  end,
+})
+local function refreshIgnoreDropdown()
+  if ignoreDropdown and ignoreDropdown.Refresh then
+    pcall(function()
+      ignoreDropdown:Refresh(getPlayerOptions())
+    end)
+  end
+end
+Players.PlayerAdded:Connect(function()
+  task.wait(0.4)
+  refreshIgnoreDropdown()
+end)
+Players.PlayerRemoving:Connect(function(player)
+  task.wait(0.2)
+  refreshIgnoreDropdown()
+end)
+autoTab:Divider()
+autoTab:Button({
+  Title = "Reset Button Position",
+  Icon = "rotate-ccw",
+  Callback = resetButtonPosition,
+})
+autoTab:Button({Title = "Toggle Pin", Icon = "pin", Callback = togglePin})
+autoTab:Toggle({
+  Title = "Recording Mode",
+  Desc = "Hide floating button completely (still clickable)",
+  Value = false,
+  Callback = function(state)
+    setRecordingMode(state)
+  end,
+})
+autoTab:Toggle({
+  Title = "Auto Status",
+  Desc = "Show fake FPS counter (Green = Auto ON | Red = Auto OFF)",
+  Value = false,
+  Callback = function(state)
+    setAutoStatus(state)
+  end,
+})
+autoTab:Divider()
+autoTab:Section({Title = "Movement Settings"})
+autoTab:Button({
+  Title = "Random Settings",
+  Icon = "shuffle",
+  Callback = function()
+    strafeDistance = math.clamp(strafeDistance + math.random(-8, 12) / 10, 5.5, 9)
+    strafeAmplitude = math.clamp(strafeAmplitude + math.random(-5, 7) / 10, 0.8, 1.6)
+    strafeSpeed = math.clamp(strafeSpeed + math.random(-3, 4), 13, 20)
+    followDuration = math.clamp(followDuration + math.random(-8, 12) / 10, 5.5, 11)
+    adhesionForce = math.clamp(adhesionForce + math.random(-3, 4) / 10, 1.6, 2.6)
+    rotationSpeed = math.clamp(rotationSpeed + math.random(-3, 5) / 100, 0.32, 0.52)
+    CONFIG.STRAFE_DISTANCE = strafeDistance
+    CONFIG.STRAFE_AMPLITUDE = strafeAmplitude
+    CONFIG.STRAFE_SPEED = strafeSpeed
+    CONFIG.FOLLOW_DURATION = followDuration
+    CONFIG.ADHESION_FORCE = adhesionForce
+    CONFIG.ROTATION_SPEED = rotationSpeed
+    task.defer(function()
+      if inputElements.sDist then
+        pcall(function()
+          inputElements.sDist:Set(tostring(math.floor(strafeDistance * 10) / 10))
+        end)
+      end
+      if inputElements.sAmp then
+        pcall(function()
+          inputElements.sAmp:Set(tostring(math.floor(strafeAmplitude * 10) / 10))
+        end)
+      end
+      if inputElements.sSpeed then
+        pcall(function()
+          inputElements.sSpeed:Set(tostring(math.floor(strafeSpeed)))
+        end)
+      end
+      if inputElements.fDur then
+        pcall(function()
+          inputElements.fDur:Set(tostring(math.floor(followDuration * 10) / 10))
+        end)
+      end
+      if inputElements.adhesion then
+        pcall(function()
+          inputElements.adhesion:Set(tostring(math.floor(adhesionForce * 10) / 10))
+        end)
+      end
+      if inputElements.rotSpeed then
+        pcall(function()
+          inputElements.rotSpeed:Set(tostring(math.floor(rotationSpeed * 100) / 100))
+        end)
+      end
+    end)
+  end,
+})
+inputElements.sDist = autoTab:Input({
+  Title = "Circle Distance",
+  Desc = "How far to circle around the target (Recommended: 6-8.5)",
+  Value = tostring(CONFIG.STRAFE_DISTANCE),
+  Placeholder = "7",
+  Callback = function(text)
+    local tonumberResult = tonumber(text)
+    if tonumberResult then
+      strafeDistance = math.clamp(tonumberResult, 4.5, 11)
+      CONFIG.STRAFE_DISTANCE = strafeDistance
+    end
+  end,
+})
+inputElements.sAmp = autoTab:Input({
+  Title = "Circle Strength",
+  Desc = "How strong the side movement is (Recommended: 0.9-1.5)",
+  Value = tostring(CONFIG.STRAFE_AMPLITUDE),
+  Placeholder = "1.1",
+  Callback = function(text)
+    local tonumberResult = tonumber(text)
+    if tonumberResult then
+      strafeAmplitude = math.clamp(tonumberResult, 0.5, 2.2)
+      CONFIG.STRAFE_AMPLITUDE = strafeAmplitude
+    end
+  end,
+})
+inputElements.sSpeed = autoTab:Input({
+  Title = "Circle Speed",
+  Desc = "How fast you circle (Recommended: 14-19)",
+  Value = tostring(CONFIG.STRAFE_SPEED),
+  Placeholder = "16",
+  Callback = function(text)
+    local tonumberResult = tonumber(text)
+    if tonumberResult then
+      strafeSpeed = math.clamp(tonumberResult, 10, 24)
+      CONFIG.STRAFE_SPEED = strafeSpeed
+    end
+  end,
+})
+inputElements.fDur = autoTab:Input({
+  Title = "Chase Time",
+  Desc = "How long to stay on one target (Recommended: 6-10)",
+  Value = tostring(CONFIG.FOLLOW_DURATION),
+  Placeholder = "8",
+  Callback = function(text)
+    local tonumberResult = tonumber(text)
+    if tonumberResult then
+      followDuration = math.clamp(tonumberResult, 4, 14)
+      CONFIG.FOLLOW_DURATION = followDuration
+    end
+  end,
+})
+inputElements.adhesion = autoTab:Input({
+  Title = "Stick Power",
+  Desc = "How tightly stick to target (1.6 - 2.6 only)",
+  Value = tostring(CONFIG.ADHESION_FORCE),
+  Placeholder = "2.2",
+  Callback = function(text)
+    local tonumberResult = tonumber(text)
+    if tonumberResult then
+      adhesionForce = math.clamp(tonumberResult, 1.6, 2.6)
+      CONFIG.ADHESION_FORCE = adhesionForce
+    end
+  end,
+})
+inputElements.rotSpeed = autoTab:Input({
+  Title = "Look Speed",
+  Desc = "How fast you turn to face the target (Recommended: 0.35-0.5)",
+  Value = tostring(CONFIG.ROTATION_SPEED),
+  Placeholder = "0.42",
+  Callback = function(text)
+    local tonumberResult = tonumber(text)
+    if tonumberResult then
+      rotationSpeed = math.clamp(tonumberResult, 0.2, 0.7)
+      CONFIG.ROTATION_SPEED = rotationSpeed
+    end
+  end,
+})
+autoTab:Space()
+autoTab:Space()
+autoTab:Section({Title = "Hold & Dodge Settings"})
+autoTab:Toggle({
+  Title = "Enable Auto Hold",
+  Desc = "Dodge when bomb timer is high",
+  Value = CONFIG.AUTO_HOLD_ENABLED,
+  Callback = function(state)
+    autoHoldEnabled = state
+    CONFIG.AUTO_HOLD_ENABLED = state
+  end,
+})
+inputElements.holdThreshold = autoTab:Input({
+  Title = "Hold Timer",
+  Desc = "Start dodging when bomb time is higher than this",
+  Value = tostring(CONFIG.AUTO_HOLD_THRESHOLD),
+  Placeholder = "4",
+  Callback = function(text)
+    local tonumberResult = tonumber(text)
+    if tonumberResult then
+      autoHoldThreshold = math.clamp(tonumberResult, 1.5, 8)
+      CONFIG.AUTO_HOLD_THRESHOLD = autoHoldThreshold
+    end
+  end,
+})
+inputElements.dodgeDist = autoTab:Input({
+  Title = "Dodge Range",
+  Desc = "Distance to start dodging from target",
+  Value = tostring(CONFIG.AUTO_HOLD_DODGE_DISTANCE),
+  Placeholder = "12",
+  Callback = function(text)
+    local tonumberResult = tonumber(text)
+    if tonumberResult then
+      autoHoldDodgeDistance = math.clamp(tonumberResult, 7, 18)
+      CONFIG.AUTO_HOLD_DODGE_DISTANCE = autoHoldDodgeDistance
+    end
+  end,
+})
+autoTab:Toggle({
+  Title = "Pause After Give",
+  Desc = "Stop moving for a short time after giving the bomb",
+  Value = CONFIG.SUSPEND_ON_GIVE,
+  Callback = function(state)
+    suspendOnGive = state
+    CONFIG.SUSPEND_ON_GIVE = state
+  end,
+})
+local settingsTab = window:Tab({Title = "Settings", Icon = "settings"})
+settingsTab:Paragraph({
+  Title = "PhantomX Custom",
+  Desc = "Premium Edition  •  made by Cypher",
+})
+settingsTab:Section({Title = "Controls"})
+settingsTab:Button({
+  Title = "Reset Everything",
+  Icon = "refresh-cw",
+  Callback = function()
+    autoOn = false
+    systemEnabled = false
+    currentTarget = nil
+    pausedAfterGive = false
+    hadBombLastFrame = false
+    ignoredPlayers = {}
+    paused = false
+    statusEnabled = false
+    resetState()
+    strafeDistance = 7
+    strafeAmplitude = 1.1
+    strafeSpeed = 16
+    followDuration = 8
+    adhesionForce = 2.2
+    rotationSpeed = 0.42
+    autoHoldEnabled = false
+    autoHoldThreshold = 4
+    autoHoldDodgeDistance = 12
+    suspendOnGive = true
+    CONFIG.STRAFE_DISTANCE = 7
+    CONFIG.STRAFE_AMPLITUDE = 1.1
+    CONFIG.STRAFE_SPEED = 16
+    CONFIG.FOLLOW_DURATION = 8
+    CONFIG.ADHESION_FORCE = 2.2
+    CONFIG.ROTATION_SPEED = 0.42
+    CONFIG.AUTO_HOLD_ENABLED = false
+    CONFIG.AUTO_HOLD_THRESHOLD = 4
+    CONFIG.AUTO_HOLD_DODGE_DISTANCE = 12
+    CONFIG.SUSPEND_ON_GIVE = true
+    if autoFollowToggle then
+      pcall(function()
+        autoFollowToggle:Set(false)
+      end)
+    end
+    updateFloatingButton()
+    updateStatusGui()
+    task.defer(function()
+      if inputElements.sDist then
+        pcall(function()
+          inputElements.sDist:Set("7")
+        end)
+      end
+      if inputElements.sAmp then
+        pcall(function()
+          inputElements.sAmp:Set("1.1")
+        end)
+      end
+      if inputElements.sSpeed then
+        pcall(function()
+          inputElements.sSpeed:Set("16")
+        end)
+      end
+      if inputElements.fDur then
+        pcall(function()
+          inputElements.fDur:Set("8")
+        end)
+      end
+      if inputElements.adhesion then
+        pcall(function()
+          inputElements.adhesion:Set("2.2")
+        end)
+      end
+      if inputElements.rotSpeed then
+        pcall(function()
+          inputElements.rotSpeed:Set("0.42")
+        end)
+      end
+      if inputElements.holdThreshold then
+        pcall(function()
+          inputElements.holdThreshold:Set("4")
+        end)
+      end
+      if inputElements.dodgeDist then
+        pcall(function()
+          inputElements.dodgeDist:Set("12")
+        end)
+      end
+    end)
+  end,
+})
+settingsTab:Button({Title = "Reset Button Position", Icon = "move", Callback = resetButtonPosition})
+settingsTab:Divider()
+settingsTab:Section({Title = "UI Keybind"})
+settingsTab:Keybind({
+  Title = "Open / Close UI",
+  Desc = "Key to show or hide the menu",
+  Value = "K",
+  Callback = function(keyName)
+    pcall(function()
+      window:SetToggleKey(Enum.KeyCode[keyName])
+    end)
+  end,
+})
+settingsTab:Divider()
+settingsTab:Section({Title = "Themes"})
+settingsTab:Dropdown({
+  Title = "UI Theme",
+  Values = {"Dark", "Light", "Indigo", "Violet", "Rose", "Sky", "Amber", "Plant"},
+  Value = "Amber",
+  Callback = function(theme)
+    pcall(function()
+      WindUI:SetTheme(theme)
+    end)
+  end,
+})
+settingsTab:Divider()
+settingsTab:Paragraph({
+  Title = "Info",
+  Desc = "PhantomX Custom  •  Luxury Edition  •  gg/uCZSFpAaEZ",
+})
+local discordTab = window:Tab({Title = "Discord", Icon = "message-circle"})
+discordTab:Paragraph({Title = "PhantomX Custom", Desc = "leaked by DRS"})
+discordTab:Paragraph({Title = "Discord Server", Desc = "https://discord.gg/uCZSFpAaEZ"})
+discordTab:Button({
+  Title = "Copy Discord Link",
+  Icon = "copy",
+  Callback = function()
+    if setclipboard then
+      setclipboard("https://discord.gg/uCZSFpAaEZ")
+    end
+  end,
+})
+window:OnDestroy(function()
+  if floatingGui then
+    floatingGui:Destroy()
+  end
+  if statusGui then
+    statusGui:Destroy()
+  end
+end)
+createFloatingButton()
+RunService.RenderStepped:Connect(function()
+  if statusEnabled and statusLabel then
+    local clock = os.clock()
+    if clock - lastStatusUpdate >= 0.12 then
+      lastStatusUpdate = clock
+      if autoOn then
+        statusLabel.Text = tostring(math.random(60, 90))
+        statusLabel.TextColor3 = colorOn
+      else
+        statusLabel.Text = tostring(math.random(20, 40))
+        statusLabel.TextColor3 = colorOff
+      end
+    end
+  end
+  local character = localPlayer.Character
+  if not character then
+    return
+  end
+  local holdingBomb = hasBomb(character)
+  if autoOn and holdingBomb and not hadBombLastFrame then
+    currentTarget = nil
+    recentBombOwner = nil
+    noRecentOwner = false
+    pausedAfterGive = false
+    playerCache = {}
+    followDeadline = tick() + followDuration
+    local newTarget = findBestTarget()
+    if newTarget then
+      currentTarget = newTarget
+    end
+  end
+  hadBombLastFrame = holdingBomb
+  if not autoOn then
+    currentTarget = nil
+    pausedAfterGive = false
+    return
+  end
+  if not holdingBomb then
+    return
+  end
+  if paused then
+    return
+  end
+  if not isAlive(localPlayer) then
+    currentTarget = nil
+    return
+  end
+  if autoHoldEnabled then
+    local timer = getBombTimer()
+    if timer and timer > autoHoldThreshold then
+      local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
+      local humanoid = character:FindFirstChild("Humanoid")
+      if humanoidRootPart and humanoid then
+        local dodgeTarget = findBestTarget()
+        if dodgeTarget and dodgeTarget.Character then
+          local humanoidRootPart2 = dodgeTarget.Character:FindFirstChild("HumanoidRootPart")
+          if humanoidRootPart2 then
+            local toTarget = humanoidRootPart2.Position - humanoidRootPart.Position
+            if toTarget.Magnitude <= autoHoldDodgeDistance then
+              local awayDir = -Vector3.new(toTarget.X, 0, toTarget.Z).Unit
+              humanoidRootPart.CFrame = humanoidRootPart.CFrame:Lerp(CFrame.new(humanoidRootPart.Position, humanoidRootPart.Position + awayDir), rotationSpeed)
+              humanoid:MoveTo(humanoidRootPart.Position + awayDir * 3 + Vector3.new(-awayDir.Z, 0, awayDir.X) * math.sin(tick() * strafeSpeed) * strafeAmplitude)
+            end
+          end
+        end
+      end
+      return
+    end
+  end
+  local candidate = findBestTarget()
+  if candidate and candidate ~= currentTarget then
+    if not currentTarget then
+      currentTarget = candidate
+      followDeadline = tick() + followDuration
+    else
+      local humanoidRootPart3 = character:FindFirstChild("HumanoidRootPart")
+      local currentRoot = currentTarget.Character and currentTarget.Character:FindFirstChild("HumanoidRootPart")
+      local candidateRoot = candidate.Character and candidate.Character:FindFirstChild("HumanoidRootPart")
+      if humanoidRootPart3 and currentRoot and candidateRoot and (candidateRoot.Position - humanoidRootPart3.Position).Magnitude < (currentRoot.Position - humanoidRootPart3.Position).Magnitude - 3.5 then
+        currentTarget = candidate
+        followDeadline = tick() + followDuration
+      end
+    end
+  end
+  if pausedAfterGive then
+    if tick() > followDeadline + 1 then
+      pausedAfterGive = false
+      currentTarget = findBestTarget()
+      if currentTarget then
+        followDeadline = tick() + followDuration
+      end
+    end
+    return
+  end
+  if tick() >= followDeadline or not currentTarget or not isAlive(currentTarget) then
+    local replacement = findBestTarget()
+    if replacement then
+      currentTarget = replacement
+      followDeadline = tick() + followDuration
+    else
+      currentTarget = nil
+    end
+  end
+  if currentTarget and character and currentTarget.Character then
+    local humanoidRootPart4 = currentTarget.Character:FindFirstChild("HumanoidRootPart")
+    local humanoidRootPart5 = character:FindFirstChild("HumanoidRootPart")
+    local humanoid2 = character:FindFirstChild("Humanoid")
+    if humanoidRootPart4 and humanoidRootPart5 and humanoid2 then
+      local distance = (humanoidRootPart4.Position - humanoidRootPart5.Position).Magnitude
+      if distance > 55 then
+        currentTarget = findBestTarget()
+        return
+      end
+      local predicted = getPredictedPosition(humanoidRootPart4, humanoidRootPart5)
+      local toPredicted = predicted - humanoidRootPart5.Position
+      faceTarget(humanoidRootPart5, predicted, humanoid2)
+      if distance > adhesionForce then
+        local goal = predicted - toPredicted.Unit * adhesionForce
+        if distance <= strafeDistance and distance > 3 then
+          local sideways = Vector3.new(-toPredicted.Z, 0, toPredicted.X)
+          if sideways.Magnitude == 0 then
+            sideways = Vector3.new(1, 0, 0)
+          end
+          goal = goal + sideways.Unit * (math.sin(tick() * strafeSpeed) * strafeAmplitude)
+        end
+        if distance < 8 then
+          pathWaypoint = nil
+          humanoid2:MoveTo(goal)
+        else
+          requestPath(humanoidRootPart5.Position, goal, character, humanoidRootPart5)
+          local moveTarget = pathWaypoint or goal
+          local moveDelta = moveTarget - humanoidRootPart5.Position
+          if Vector3.new(moveDelta.X, 0, moveDelta.Z).Magnitude > 0.5 then
+            humanoid2:MoveTo(moveTarget)
+            if isBlocked(character, humanoidRootPart5, Vector3.new(0, -1, 0), 3) then
+              humanoid2.Jump = true
+            end
+          else
+            humanoid2:MoveTo(goal)
+          end
+        end
+      else
+        humanoid2:MoveTo(humanoidRootPart5.Position + toPredicted.Unit * 0.1)
+      end
+      local tool = character:FindFirstChildOfClass("Tool")
+      if tool then
+        tagTarget(currentTarget.Character, tool)
+      end
+    end
+  end
+end)
+Players.PlayerRemoving:Connect(function(player)
+  if currentTarget and player == currentTarget then
+    currentTarget = nil
+    pathWaypoint = nil
+  end
+  if recentBombOwner and player == recentBombOwner then
+    recentBombOwner = nil
+  end
+end)
